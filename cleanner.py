@@ -47,8 +47,8 @@ def clean(x):
         return x
     
     x = str(x).lower().strip()
-    is_k = bool(re.search(r"\d\s*k\b", x))
-    is_m = bool(re.search(r"\d\s*m\b", x))
+    is_k = bool(re.search(r"\d+(\.\d+)?\s*k\b", x))
+    is_m = bool(re.search(r"\d+(\.\d+)?\s*m\b", x))
     x_clean_words = re.sub(r"₹|rs\.?", "", x)
     try:
         word =  w2n.word_to_num(x_clean_words)
@@ -64,13 +64,43 @@ def clean(x):
             val *= 1000000
     return val
 
-new_df = df.copy()
-new_df = lower_strip(new_df)
-new_df = convert_datetime(new_df)
+def data_filling(new_df):
 
-num_cols = ["price", "stock", "quantity"]
-for col in num_cols:
-    new_df[col] = df[col].apply(clean)
+    new_df["city"] = new_df["city"].fillna(new_df["city"].mode()[0] if not new_df["city"].mode().empty else "unknown")
+    new_df["signup_date"] = new_df.groupby("city")["signup_date"].transform(lambda x: x.fillna(x.median()))
+    new_df["product_name"] = new_df["product_name"].fillna(new_df["product_name"].mode()[0] if not new_df["product_name"].mode().empty else "unknown")
+    new_df["product_id"] = new_df.groupby("product_name")["product_id"].transform(lambda x: x.fillna(x.median()))
+    new_df["price"] = new_df.groupby("product_name")["price"].transform(lambda x: x.fillna(x.median()))
+    new_df["added_date"] = new_df.groupby("product_name")["added_date"].transform(lambda x: x.fillna(x.median() if not x.isnull().all() else x))
+    new_df["stock"] = new_df.groupby("product_name")["stock"].transform(lambda x: x.fillna(x.median()))
+    new_df["category"] = new_df.groupby("product_name")["category"].transform(lambda x: x.fillna(x.mode()[0]if not x.mode().empty else "unknown"))
+    return new_df
 
-print(new_df.info())
-print(df.info())
+def fun_call(df):
+    new_df = df.copy()
+    new_df.dropna(how="all", inplace= True)
+    new_df.dropna(subset="order_id", how="any", inplace=True)
+    new_df = lower_strip(new_df)
+    new_df = convert_datetime(new_df)
+
+    num_cols = ["price", "stock", "quantity"]
+    for col in num_cols:
+        new_df[col] = new_df[col].apply(clean)
+    new_df = data_filling(new_df)
+
+    return new_df
+
+def validate(df):
+    shape = df.shape
+    nullsum = df.isnull().sum()
+    duplicate = df.duplicated(subset=["customer_id", "order_id"]).sum()
+
+    print(f"shape of the datafream ({shape})")
+    print(f"missing valus:\n {nullsum}")
+    print(f"duplicates valus: ({duplicate})")
+
+df = fun_call(df)
+print(df.isnull().sum())
+print(df)
+
+
