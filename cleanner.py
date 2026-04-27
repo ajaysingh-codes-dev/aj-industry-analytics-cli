@@ -1,6 +1,5 @@
 # work is under progress
 
-
 from word2number import w2n
 import re
 import pandas as pd
@@ -25,20 +24,23 @@ customers = pd.read_sql("SELECT * FROM customers", conn)
 products = pd.read_sql("SELECT * FROM products", conn)
 orders = pd.read_sql("SELECT * FROM orders", conn)
 
-temp = pd.merge(customers, orders, on="customer_id", how="left")
-df = temp.merge(products, on="product_id", how="left")
+df = pd.merge(orders, customers, on="customer_id", how="left")
+df = df.merge(products, on="product_id", how="left")
 
 def lower_strip(df):
     df.columns = df.columns.str.strip().str.lower()
     object_col = df.select_dtypes(include=["string", "object"]).columns
     for col in object_col:
         df[col] = df[col].apply(lambda x: str(x).strip().lower() if pd.notnull(x) else x)
+        df[col] = df[col].replace(["none", "nan", "", "null"], np.nan)
     return df
 
 def convert_datetime(df):
 
-    date_col = ["signup_date", "order_date", "added_date"]
-    df[date_col] = df[date_col].apply(lambda col: pd.to_datetime(col, format="mixed", errors="coerce"))
+    date_col = df.columns[df.columns.str.contains("date", case=False)]
+    for col in date_col:
+        df[col] = pd.to_datetime(df[col], format="mixed", errors="coerce")
+        df[col] = df[col].fillna(df[col].median())
     return df
 
 def clean(x):
@@ -64,43 +66,40 @@ def clean(x):
             val *= 1000000
     return val
 
-def data_filling(new_df):
-
-    new_df["city"] = new_df["city"].fillna(new_df["city"].mode()[0] if not new_df["city"].mode().empty else "unknown")
-    new_df["signup_date"] = new_df.groupby("city")["signup_date"].transform(lambda x: x.fillna(x.median()))
-    new_df["product_name"] = new_df["product_name"].fillna(new_df["product_name"].mode()[0] if not new_df["product_name"].mode().empty else "unknown")
-    new_df["product_id"] = new_df.groupby("product_name")["product_id"].transform(lambda x: x.fillna(x.median()))
-    new_df["price"] = new_df.groupby("product_name")["price"].transform(lambda x: x.fillna(x.median()))
-    new_df["added_date"] = new_df.groupby("product_name")["added_date"].transform(lambda x: x.fillna(x.median() if not x.isnull().all() else x))
-    new_df["stock"] = new_df.groupby("product_name")["stock"].transform(lambda x: x.fillna(x.median()))
-    new_df["category"] = new_df.groupby("product_name")["category"].transform(lambda x: x.fillna(x.mode()[0]if not x.mode().empty else "unknown"))
-    return new_df
 
 def fun_call(df):
     new_df = df.copy()
+    if len(new_df) == 0:
+        return new_df, pd.DataFrame()
     new_df.dropna(how="all", inplace= True)
-    new_df.dropna(subset="order_id", how="any", inplace=True)
+    new_df.dropna(axis=1, how="all", inplace= True)
     new_df = lower_strip(new_df)
     new_df = convert_datetime(new_df)
+    id_col = new_df.columns[new_df.columns.str.contains("id", case=False)]
+    if len(id_col) == 0:
+        return new_df, pd.DataFrame()
+    for col in id_col:
+        new_df[col] = pd.to_numeric(new_df[col], errors="coerce").astype("Int64")
+    incomplete_records = new_df[new_df[id_col].isna().any(axis=1)].copy()
+    new_df.dropna(subset=id_col, how="any", inplace=True)
 
     num_cols = ["price", "stock", "quantity"]
     for col in num_cols:
-        new_df[col] = new_df[col].apply(clean)
-    new_df = data_filling(new_df)
+        if col in new_df.columns:
+            new_df[col] = new_df[col].apply(clean)
+            mid_val = new_df[col].median()
+            if pd.notna(mid_val):
+                new_df[col] = new_df[col].fillna(new_df[col].median())
+    
+    object_col = new_df.select_dtypes(include=["string", "object"]).columns
+    for col in object_col:
+        if new_df[col].nunique() < 20:
+            new_df[col] = new_df[col].fillna("missing")
 
-    return new_df
+    return new_df, incomplete_records
 
-def validate(df):
-    shape = df.shape
-    nullsum = df.isnull().sum()
-    duplicate = df.duplicated(subset=["customer_id", "order_id"]).sum()
-
-    print(f"shape of the datafream ({shape})")
-    print(f"missing valus:\n {nullsum}")
-    print(f"duplicates valus: ({duplicate})")
-
-df = fun_call(df)
-print(df.isnull().sum())
-print(df)
-
-
+a, b = fun_call(df)
+print(a.info())
+df.to_excel("messy_data.xlsx", index=False)
+a.to_excel("clean_data.xlsx", index=False)
+b.to_excel("incomplete_records.xlsx", index=False)
