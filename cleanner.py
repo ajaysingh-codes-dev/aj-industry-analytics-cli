@@ -27,6 +27,7 @@ orders = pd.read_sql("SELECT * FROM orders", conn)
 df = pd.merge(orders, customers, on="customer_id", how="left")
 df = df.merge(products, on="product_id", how="left")
 
+
 def lower_strip(df):
     df.columns = df.columns.str.strip().str.lower()
     object_col = df.select_dtypes(include=["string", "object"]).columns
@@ -39,8 +40,9 @@ def convert_datetime(df):
 
     date_col = df.columns[df.columns.str.contains("date", case=False)]
     for col in date_col:
+        before_fill = df[col].isna().sum()
         df[col] = pd.to_datetime(df[col], format="mixed", errors="coerce")
-        df[col] = df[col].fillna(df[col].median())
+
     return df
 
 def clean(x):
@@ -87,19 +89,115 @@ def fun_call(df):
     for col in num_cols:
         if col in new_df.columns:
             new_df[col] = new_df[col].apply(clean)
-            mid_val = new_df[col].median()
-            if pd.notna(mid_val):
-                new_df[col] = new_df[col].fillna(new_df[col].median())
     
-    object_col = new_df.select_dtypes(include=["string", "object"]).columns
+    summary = {
+    "total_rows": df.shape[0],
+    "total_columns": df.shape[1],
+    "clean_rows" : new_df.shape[0],
+    "clean_columns" : new_df.shape[1],
+    "incomplete_rows": len(incomplete_records)}
+
+    return new_df, incomplete_records, summary
+
+
+def fill_value(df):
+    df = df.copy()
+    fill_log = []
+    date_col = df.columns[df.columns.str.contains("date", case=False)]
+    for col in date_col:
+        before_fill = df[col].isna().sum()
+        df = df.sort_values(by=col)
+        df[col] = df[col].fillna(method="ffill")
+        after_fill = df[col].isna().sum()
+        if before_fill > after_fill:
+            fill_log.append(
+                {"column": col,
+            "method": "forward fill",
+            "filled_values": before_fill - after_fill}
+            )
+    
+    num_cols = ["price", "stock", "quantity"]
+    for col in num_cols:
+        if col in df.columns:
+            before_fill = df[col].isna().sum()
+            mid_val = df[col].median()
+            if pd.notna(mid_val):
+                df[col] = df[col].fillna(mid_val)
+            after_fill = df[col].isna().sum()
+            if before_fill > after_fill:
+                fill_log.append(
+                    {"column": col,
+                     "method": "median",
+                     "filled_values": before_fill - after_fill}
+                )
+
+    id_col = df.columns[df.columns.str.contains("id", case=False)]
+    object_col = df.select_dtypes(include=["string", "object"]).columns
     for col in object_col:
-        if new_df[col].nunique() < 20:
-            new_df[col] = new_df[col].fillna("missing")
+        if col in id_col:
+            continue
+        before_null = df[col].isna().sum()
+        if df[col].nunique() < 20:
+            df[col] = df[col].fillna("missing")
+            method = "missing"
+        else:
+            mode_val = df[col].mode()
+            if not mode_val.empty:
+                df[col] = df[col].fillna(mode_val[0])
+                method = "mode"
+            else:
+                method = None
+        after_null = df[col].isna().sum()
+        if before_null > after_null:
+            fill_log.append(
+                {"column": col,
+                     "method": method,
+                     "filled_values": before_null - after_null}
+            )
+    
+    fill_log_df = pd.DataFrame(fill_log)
 
-    return new_df, incomplete_records
+    return df, fill_log_df
 
-a, b = fun_call(df)
-print(a.info())
-df.to_excel("messy_data.xlsx", index=False)
-a.to_excel("clean_data.xlsx", index=False)
-b.to_excel("incomplete_records.xlsx", index=False)
+def main():
+    print("\n=== DATA CLEANING PIPELINE ===\n")
+
+    clean_df, incomplete_records, summary = fun_call(df)
+
+    print("=== Summery ===\n")
+    for k, v in summary.items():
+        print(f"{k}:{v}")
+
+    missing_report = clean_df.isna().sum().reset_index()
+    missing_report.columns = ["columns", "missing_count"]
+    missing_report["missing_%"] = (missing_report["missing_count"] / len(clean_df))* 100
+    missing_report = missing_report.sort_values(by="missing_%", ascending=False)
+    print("\n==== Missing_Report ====")
+    print(missing_report)
+    choice = input("\nFill missing values? (yes/no): ").strip().lower()
+    if choice == "yes":
+        final_df, fill_log = fill_value(clean_df)
+        print(f"\n Fill_log:\n {fill_log}")
+
+    else:
+        final_df = clean_df
+        fill_log = pd.DataFrame()
+        print("Skipped filling missing values. ")
+
+    print(f"\n Final Cleaned Data Preview:\n {final_df.head()}")
+    print(f"\n Incompelete_records Preview:\n {incomplete_records.head()}")
+    save = input("Save all records and Clean data? (yes/no): ").strip().lower()
+    if save == "yes":
+        with pd.ExcelWriter("report.xlsx") as writer:
+            final_df.to_excel(writer, sheet_name="clean_data", index=False)
+            incomplete_records.to_excel(writer, sheet_name="incomplete", index=False)
+            summary_df = pd.DataFrame(list(summary.items()), columns=["metric", "value"])
+            summary_df.to_excel(writer, sheet_name="summary", index=False)
+            missing_report.to_excel(writer, sheet_name="missing_report", index=False)
+            fill_log.to_excel(writer, sheet_name="fill_log", index=False)
+    
+    else:
+        print("Thankyou for testing this script")
+
+
+main()
